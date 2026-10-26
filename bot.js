@@ -20,12 +20,16 @@ if (!fs.existsSync(path.join(__dirname, 'data'))) {
     fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
 }
 if (!fs.existsSync(DB_PATH)) {
-    fs.writeFileSync(DB_PATH, JSON.stringify({ keys: {}, clients: {}, stats: { total_keys: 0, total_sales: 0, total_stars: 0 } }, null, 2));
+    fs.writeFileSync(DB_PATH, JSON.stringify({ keys: {}, clients: {}, promos: {}, stats: { total_keys: 0, total_sales: 0, total_stars: 0 } }, null, 2));
 }
 
 function loadDB() {
-    try { return JSON.parse(fs.readFileSync(DB_PATH, 'utf8')); }
-    catch (e) { return { keys: {}, clients: {}, stats: { total_keys: 0, total_sales: 0, total_stars: 0 } }; }
+    try { 
+        let db = JSON.parse(fs.readFileSync(DB_PATH, 'utf8')); 
+        if (!db.promos) db.promos = {};
+        return db;
+    }
+    catch (e) { return { keys: {}, clients: {}, promos: {}, stats: { total_keys: 0, total_sales: 0, total_stars: 0 } }; }
 }
 function saveDB(db) { fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2)); }
 
@@ -35,10 +39,11 @@ const PLANS = {
     '1d': { name: 'Тест 1 день', days: 1, stars: 0 },
     '1w': { name: 'Тест 1 неделя', days: 7, stars: 0 },
     '1m': { name: 'Тест 1 месяц', days: 30, stars: 0 },
-    '100': { name: '100 Stars', days: 30, stars: 100 },
-    '150': { name: '150 Stars', days: 30, stars: 150 },
-    '300': { name: '300 Stars', days: 30, stars: 300 },
-    '500': { name: '500 Stars', days: 30, stars: 500 }
+    
+    '7d': { name: '7 дней', days: 7, stars: 200 },
+    '14d': { name: '14 дней', days: 14, stars: 350 },
+    '30d': { name: '30 дней', days: 30, stars: 680 },
+    'inf': { name: 'Навсегда', days: 36500, stars: 1750 }
 };
 
 function generateKey() {
@@ -82,8 +87,6 @@ function issueKey(userId, username, planId) {
 }
 
 // --- БОТ: КОМАНДЫ ---
-
-// 1. Нормальное описание и меню
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
     const text = `👋 *Добро пожаловать в ZTai!*\n\n` +
@@ -91,11 +94,11 @@ bot.onText(/\/start/, (msg) => {
         `Он автоматически играет за тебя, используя экранный анализ и тапы.\n\n` +
         `📌 *Что умеет бот:*\n` +
         `✅ Поддержка любого бойца\n` +
-        `✅ Умная логика боя (Rush, Showdown)\n` +
+        `✅ Умная логика боя\n` +
         `✅ Работает в фоне\n` +
-        `✅ Простой и понятный интерфейс\n\n` +
-        `🛒 Нажми "Купить", чтобы выбрать тариф и получить ключ.\n` +
-        `❓ Если возникли вопросы — пиши в поддержку.`;
+        `✅ Простой интерфейс\n\n` +
+        `🛒 Нажми "Купить", чтобы выбрать тариф.\n` +
+        `🎁 Если у тебя есть промокод, введи /promo КОД`;
 
     bot.sendMessage(chatId, text, {
         parse_mode: 'Markdown',
@@ -110,7 +113,30 @@ bot.onText(/\/start/, (msg) => {
     });
 });
 
-// 2. Админ-панель /dev
+// Команда /promo
+bot.onText(/\/promo (.+)/, (msg, match) => {
+    const chatId = msg.chat.id;
+    const promoCode = match[1].trim().toUpperCase();
+    const db = loadDB();
+
+    if (!db.promos[promoCode]) {
+        return bot.sendMessage(chatId, '❌ Такого промокода не существует.');
+    }
+
+    const promo = db.promos[promoCode];
+    if (promo.uses >= promo.max_uses) {
+        return bot.sendMessage(chatId, '❌ Этот промокод уже закончился.');
+    }
+
+    // Выдаем ключ
+    const key = issueKey(chatId, msg.from.username || 'promo_user', promo.plan);
+    promo.uses++;
+    saveDB(db);
+
+    bot.sendMessage(chatId, `✅ Промокод активирован!\n\n🔑 Твой ключ:\n\`${key}\`\n\nСрок действия: ${PLANS[promo.plan].name}`, { parse_mode: 'Markdown' });
+});
+
+// Админ-панель /dev
 bot.onText(/\/dev/, (msg) => {
     if (msg.from.id !== ADMIN_ID) return;
     bot.sendMessage(msg.chat.id, '🛠 *Панель разработчика*', {
@@ -123,10 +149,29 @@ bot.onText(/\/dev/, (msg) => {
                 [{ text: '📆 Тест 1 месяц', callback_data: 'dev_key_1m' }],
                 [{ text: '📊 Статистика', callback_data: 'dev_stats' }],
                 [{ text: '🔑 Все ключи', callback_data: 'dev_keys' }],
-                [{ text: '👥 Клиенты', callback_data: 'dev_clients' }]
+                [{ text: '👥 Клиенты', callback_data: 'dev_clients' }],
+                [{ text: '🎁 Создать промокод', callback_data: 'dev_create_promo' }]
             ]
         }
     });
+});
+
+// Создание промокода (текстовый ввод)
+bot.onText(/\/newpromo (.+) (.+) (.+)/, (msg, match) => {
+    if (msg.from.id !== ADMIN_ID) return;
+    const code = match[1].toUpperCase();
+    const planId = match[2]; // например '7d', '30d'
+    const maxUses = parseInt(match[3]);
+
+    if (!PLANS[planId] || !PLANS[planId].stars === 0) {
+        return bot.sendMessage(msg.chat.id, '❌ Неверный формат. Используй: /newpromo КОД 7d 10 (код, тариф, кол-во активаций)');
+    }
+
+    const db = loadDB();
+    db.promos[code] = { plan: planId, uses: 0, max_uses: maxUses };
+    saveDB(db);
+
+    bot.sendMessage(msg.chat.id, `✅ Промокод \`${code}\` создан!\nТариф: ${PLANS[planId].name}\nЛимит: ${maxUses} активаций.`, { parse_mode: 'Markdown' });
 });
 
 // --- БОТ: ОБРАБОТКА КНОПОК ---
@@ -139,10 +184,10 @@ bot.on('callback_query', async (q) => {
         bot.sendMessage(chatId, 'Выберите тариф:', {
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: '100 Stars (30 дней)', callback_data: 'buy_100' }],
-                    [{ text: '150 Stars (30 дней)', callback_data: 'buy_150' }],
-                    [{ text: '300 Stars (30 дней)', callback_data: 'buy_300' }],
-                    [{ text: '500 Stars (30 дней)', callback_data: 'buy_500' }]
+                    [{ text: '🟢 7 дней — 200 ⭐', callback_data: 'buy_7d' }],
+                    [{ text: '🔵 14 дней — 350 ⭐', callback_data: 'buy_14d' }],
+                    [{ text: '🟣 30 дней — 680 ⭐', callback_data: 'buy_30d' }],
+                    [{ text: '💎 Навсегда — 1750 ⭐', callback_data: 'buy_inf' }]
                 ]
             }
         });
@@ -162,11 +207,10 @@ bot.on('callback_query', async (q) => {
             bot.sendMessage(chatId, '❌ Ошибка: ' + e.message);
         }
     } else if (data === 'my_key') {
-        // Ищем только КУПЛЕННЫЕ ключи (не тестовые)
         const userKeys = Object.entries(db.keys).filter(([k, v]) => v.user_id === chatId && !['1h','1d','1w','1m'].includes(v.plan));
         
         if (userKeys.length === 0) {
-            bot.sendMessage(chatId, '❌ У тебя нет купленных ключей.\nКупи ключ в меню "Купить".');
+            bot.sendMessage(chatId, '❌ У тебя нет купленных ключей.');
         } else {
             let msg = '🔑 *Твои ключи:*\n\n';
             userKeys.forEach(([k, v]) => {
@@ -176,7 +220,7 @@ bot.on('callback_query', async (q) => {
             bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
         }
     } else if (data === 'about') {
-        bot.sendMessage(chatId, '🤖 *ZTai* — это AI-бот для Brawl Stars.\n\nОн использует анализ экрана (OCR) и виртуальные тапы для игры.\nБот не читает память игры и не является читом, который ломает правила Supercell.\n\nВерсия: 1.0.0\nРазработчик: @zynnntrix', { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, '🤖 *ZTai* — это AI-бот для Brawl Stars.\n\nВерсия: 1.0.0\nРазработчик: @zynnntrix', { parse_mode: 'Markdown' });
     
     // --- ФУНКЦИИ ДЛЯ /DEV ---
     } else if (data.startsWith('dev_key_')) {
@@ -221,6 +265,9 @@ bot.on('callback_query', async (q) => {
             });
             bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
         }
+    } else if (data === 'dev_create_promo') {
+        if (chatId !== ADMIN_ID) return;
+        bot.sendMessage(chatId, 'Введи команду в формате:\n`/newpromo КОД ТАРИФ КОЛИЧЕСТВО`\n\nНапример: `/newpromo ZYNN7D 7d 10` (код ZYNN7D, тариф 7 дней, 10 активаций).', { parse_mode: 'Markdown' });
     }
 });
 
@@ -273,7 +320,6 @@ app.post('/api/check_key', (req, res) => {
         k.device_id = device_id;
         k.activated_at = Date.now();
         
-        // Сохраняем клиента (для статистики в /dev)
         db.clients[Date.now()] = {
             user_id: k.user_id,
             username: k.username,
