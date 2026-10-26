@@ -7,6 +7,7 @@ const path = require('path');
 // --- НАСТРОЙКИ ---
 const TOKEN = '8874349664:AAHgy-pM3K1Yd5eiuGyeftLXKgojZtlv0tg';
 const ADMIN_ID = 8558500657;
+const SUPPORT_USERNAME = '@zynnntrix';
 const PORT = process.env.PORT || 8080;
 
 const bot = new TelegramBot(TOKEN, { polling: true });
@@ -81,21 +82,35 @@ function issueKey(userId, username, planId) {
 }
 
 // --- БОТ: КОМАНДЫ ---
+
+// 1. Нормальное описание и меню
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId, '👋 Добро пожаловать в *ZTai*!\n\nКупи ключ, чтобы начать играть.', {
+    const text = `👋 *Добро пожаловать в ZTai!*\n\n` +
+        `🤖 ZTai — это умный AI-бот для Brawl Stars.\n` +
+        `Он автоматически играет за тебя, используя экранный анализ и тапы.\n\n` +
+        `📌 *Что умеет бот:*\n` +
+        `✅ Поддержка любого бойца\n` +
+        `✅ Умная логика боя (Rush, Showdown)\n` +
+        `✅ Работает в фоне\n` +
+        `✅ Простой и понятный интерфейс\n\n` +
+        `🛒 Нажми "Купить", чтобы выбрать тариф и получить ключ.\n` +
+        `❓ Если возникли вопросы — пиши в поддержку.`;
+
+    bot.sendMessage(chatId, text, {
         parse_mode: 'Markdown',
         reply_markup: {
             inline_keyboard: [
-                [{ text: '🛒 Купить', callback_data: 'buy' }],
+                [{ text: '🛒 Купить ключ', callback_data: 'buy' }],
                 [{ text: '🔑 Мой ключ', callback_data: 'my_key' }],
                 [{ text: 'ℹ️ О ZTai', callback_data: 'about' }],
-                [{ text: '❓ Помощь', callback_data: 'help' }]
+                [{ text: '🆘 Поддержка', url: `https://t.me/${SUPPORT_USERNAME.replace('@', '')}` }]
             ]
         }
     });
 });
 
+// 2. Админ-панель /dev
 bot.onText(/\/dev/, (msg) => {
     if (msg.from.id !== ADMIN_ID) return;
     bot.sendMessage(msg.chat.id, '🛠 *Панель разработчика*', {
@@ -107,7 +122,8 @@ bot.onText(/\/dev/, (msg) => {
                 [{ text: '🗓 Тест 1 неделя', callback_data: 'dev_key_1w' }],
                 [{ text: '📆 Тест 1 месяц', callback_data: 'dev_key_1m' }],
                 [{ text: '📊 Статистика', callback_data: 'dev_stats' }],
-                [{ text: '🔑 Все ключи', callback_data: 'dev_keys' }]
+                [{ text: '🔑 Все ключи', callback_data: 'dev_keys' }],
+                [{ text: '👥 Клиенты', callback_data: 'dev_clients' }]
             ]
         }
     });
@@ -117,6 +133,7 @@ bot.onText(/\/dev/, (msg) => {
 bot.on('callback_query', async (q) => {
     const chatId = q.message.chat.id;
     const data = q.data;
+    const db = loadDB();
 
     if (data === 'buy') {
         bot.sendMessage(chatId, 'Выберите тариф:', {
@@ -145,11 +162,11 @@ bot.on('callback_query', async (q) => {
             bot.sendMessage(chatId, '❌ Ошибка: ' + e.message);
         }
     } else if (data === 'my_key') {
-        const db = loadDB();
-        const userKeys = Object.entries(db.keys).filter(([k, v]) => v.user_id === chatId && v.plan.startsWith('1') === false);
+        // Ищем только КУПЛЕННЫЕ ключи (не тестовые)
+        const userKeys = Object.entries(db.keys).filter(([k, v]) => v.user_id === chatId && !['1h','1d','1w','1m'].includes(v.plan));
         
         if (userKeys.length === 0) {
-            bot.sendMessage(chatId, '❌ У тебя нет купленных ключей.');
+            bot.sendMessage(chatId, '❌ У тебя нет купленных ключей.\nКупи ключ в меню "Купить".');
         } else {
             let msg = '🔑 *Твои ключи:*\n\n';
             userKeys.forEach(([k, v]) => {
@@ -159,14 +176,51 @@ bot.on('callback_query', async (q) => {
             bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
         }
     } else if (data === 'about') {
-        bot.sendMessage(chatId, '🤖 ZTai — AI-бот для Brawl Stars.\nАвтоматически играет, умная логика, работает в фоне.');
-    } else if (data === 'help') {
-        bot.sendMessage(chatId, '❓ Если возникли проблемы с активацией ключа, напишите в поддержку: @your_support');
+        bot.sendMessage(chatId, '🤖 *ZTai* — это AI-бот для Brawl Stars.\n\nОн использует анализ экрана (OCR) и виртуальные тапы для игры.\nБот не читает память игры и не является читом, который ломает правила Supercell.\n\nВерсия: 1.0.0\nРазработчик: @zynnntrix', { parse_mode: 'Markdown' });
+    
+    // --- ФУНКЦИИ ДЛЯ /DEV ---
     } else if (data.startsWith('dev_key_')) {
         if (chatId !== ADMIN_ID) return;
         const planId = data.replace('dev_key_', '');
         const key = issueKey(ADMIN_ID, 'admin', planId);
         bot.sendMessage(chatId, `✅ Тестовый ключ (${PLANS[planId].name}):\n\`${key}\``, { parse_mode: 'Markdown' });
+    
+    } else if (data === 'dev_stats') {
+        if (chatId !== ADMIN_ID) return;
+        const s = db.stats;
+        const msg = `📊 *Статистика ZTai*\n\n` +
+            `🔑 Всего создано ключей: ${s.total_keys}\n` +
+            `💰 Всего продаж: ${s.total_sales}\n` +
+            `⭐ Всего звезд: ${s.total_stars}\n\n` +
+            `👥 Пользователей в базе: ${Object.keys(db.clients).length}`;
+        bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+
+    } else if (data === 'dev_keys') {
+        if (chatId !== ADMIN_ID) return;
+        const keys = Object.entries(db.keys);
+        if (keys.length === 0) {
+            bot.sendMessage(chatId, 'Ключей пока нет.');
+        } else {
+            let msg = '🔑 *Последние 20 ключей:*\n\n';
+            keys.slice(-20).reverse().forEach(([k, v]) => {
+                const status = v.activated ? '✅' : '⏳';
+                msg += `${status} \`${k}\` | ${v.plan} | ${new Date(v.expires).toLocaleDateString()}\n`;
+            });
+            bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+        }
+
+    } else if (data === 'dev_clients') {
+        if (chatId !== ADMIN_ID) return;
+        const clients = Object.entries(db.clients);
+        if (clients.length === 0) {
+            bot.sendMessage(chatId, 'Клиентов пока нет.');
+        } else {
+            let msg = '👥 *Последние 10 клиентов:*\n\n';
+            clients.slice(-10).reverse().forEach(([id, c]) => {
+                msg += `👤 @${c.username} (ID: ${c.user_id})\n📱 ${c.device || 'unknown'}\n🔑 ${c.key}\n\n`;
+            });
+            bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+        }
     }
 });
 
@@ -218,6 +272,16 @@ app.post('/api/check_key', (req, res) => {
         k.activated = true;
         k.device_id = device_id;
         k.activated_at = Date.now();
+        
+        // Сохраняем клиента (для статистики в /dev)
+        db.clients[Date.now()] = {
+            user_id: k.user_id,
+            username: k.username,
+            device: device_id,
+            key: key,
+            plan: k.plan,
+            time: Date.now()
+        };
         saveDB(db);
     }
     
