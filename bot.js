@@ -46,6 +46,9 @@ const PLANS = {
     'inf': { name: 'Навсегда', days: 36500, stars: 1750 }
 };
 
+// Временное хранилище для промокодов, которые создает админ
+let pendingPromoCode = null;
+
 function generateKey() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let res = 'ZTAI-';
@@ -90,15 +93,13 @@ function issueKey(userId, username, planId) {
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
     const text = `👋 *Добро пожаловать в ZTai!*\n\n` +
-        `🤖 ZTai — это умный AI-бот для Brawl Stars.\n` +
-        `Он автоматически играет за тебя, используя экранный анализ и тапы.\n\n` +
+        `🤖 ZTai — это умный AI-бот для Brawl Stars.\n\n` +
         `📌 *Что умеет бот:*\n` +
         `✅ Поддержка любого бойца\n` +
         `✅ Умная логика боя\n` +
-        `✅ Работает в фоне\n` +
-        `✅ Простой интерфейс\n\n` +
+        `✅ Работает в фоне\n\n` +
         `🛒 Нажми "Купить", чтобы выбрать тариф.\n` +
-        `🎁 Если у тебя есть промокод, введи /promo КОД`;
+        `🎁 Если есть промокод, введи /promo КОД`;
 
     bot.sendMessage(chatId, text, {
         parse_mode: 'Markdown',
@@ -113,7 +114,7 @@ bot.onText(/\/start/, (msg) => {
     });
 });
 
-// Команда /promo
+// Команда /promo для пользователей
 bot.onText(/\/promo (.+)/, (msg, match) => {
     const chatId = msg.chat.id;
     const promoCode = match[1].trim().toUpperCase();
@@ -128,7 +129,6 @@ bot.onText(/\/promo (.+)/, (msg, match) => {
         return bot.sendMessage(chatId, '❌ Этот промокод уже закончился.');
     }
 
-    // Выдаем ключ
     const key = issueKey(chatId, msg.from.username || 'promo_user', promo.plan);
     promo.uses++;
     saveDB(db);
@@ -156,22 +156,27 @@ bot.onText(/\/dev/, (msg) => {
     });
 });
 
-// Создание промокода (текстовый ввод)
-bot.onText(/\/newpromo (.+) (.+) (.+)/, (msg, match) => {
+// НОВАЯ КОМАНДА: /newpromo КОД
+bot.onText(/\/newpromo (.+)/, (msg, match) => {
     if (msg.from.id !== ADMIN_ID) return;
-    const code = match[1].toUpperCase();
-    const planId = match[2]; // например '7d', '30d'
-    const maxUses = parseInt(match[3]);
+    const code = match[1].trim().toUpperCase();
+    
+    // Сохраняем код в память и ждем выбора
+    pendingPromoCode = code;
 
-    if (!PLANS[planId] || !PLANS[planId].stars === 0) {
-        return bot.sendMessage(msg.chat.id, '❌ Неверный формат. Используй: /newpromo КОД 7d 10 (код, тариф, кол-во активаций)');
-    }
-
-    const db = loadDB();
-    db.promos[code] = { plan: planId, uses: 0, max_uses: maxUses };
-    saveDB(db);
-
-    bot.sendMessage(msg.chat.id, `✅ Промокод \`${code}\` создан!\nТариф: ${PLANS[planId].name}\nЛимит: ${maxUses} активаций.`, { parse_mode: 'Markdown' });
+    bot.sendMessage(msg.chat.id, `Код \`${code}\` принят. Что он должен делать?`, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '⏱ Тест 1 час', callback_data: 'setpromo_1h' }],
+                [{ text: '📅 Тест 1 день', callback_data: 'setpromo_1d' }],
+                [{ text: '🗓 Тест 1 неделя', callback_data: 'setpromo_1w' }],
+                [{ text: '📆 Тест 1 месяц', callback_data: 'setpromo_1m' }],
+                [{ text: '🟢 7 дней (платный)', callback_data: 'setpromo_7d' }],
+                [{ text: '💎 Навсегда (платный)', callback_data: 'setpromo_inf' }]
+            ]
+        }
+    });
 });
 
 // --- БОТ: ОБРАБОТКА КНОПОК ---
@@ -179,6 +184,22 @@ bot.on('callback_query', async (q) => {
     const chatId = q.message.chat.id;
     const data = q.data;
     const db = loadDB();
+
+    // Обработка выбора для промокода
+    if (data.startsWith('setpromo_')) {
+        if (chatId !== ADMIN_ID || !pendingPromoCode) return;
+        
+        const planId = data.replace('setpromo_', '');
+        const code = pendingPromoCode;
+        pendingPromoCode = null; // Сбрасываем
+
+        // Создаем промокод с лимитом 100 активаций (можно поменять)
+        db.promos[code] = { plan: planId, uses: 0, max_uses: 100 };
+        saveDB(db);
+
+        bot.sendMessage(chatId, `✅ Промокод \`${code}\` создан!\nТариф: ${PLANS[planId].name}\nЛимит: 100 активаций.`, { parse_mode: 'Markdown' });
+        return;
+    }
 
     if (data === 'buy') {
         bot.sendMessage(chatId, 'Выберите тариф:', {
@@ -267,7 +288,7 @@ bot.on('callback_query', async (q) => {
         }
     } else if (data === 'dev_create_promo') {
         if (chatId !== ADMIN_ID) return;
-        bot.sendMessage(chatId, 'Введи команду в формате:\n`/newpromo КОД ТАРИФ КОЛИЧЕСТВО`\n\nНапример: `/newpromo ZYNN7D 7d 10` (код ZYNN7D, тариф 7 дней, 10 активаций).', { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, 'Введи команду:\n`/newpromo ТВОЙ_КОД`\n\nНапример: `/newpromo ZYNN7D`', { parse_mode: 'Markdown' });
     }
 });
 
